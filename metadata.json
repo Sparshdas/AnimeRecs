@@ -1,0 +1,6 @@
+{
+  "name": "AnimeRecs",
+  "description": "Smart Anime, Manga, and Manhwa recommendations powered by AniList GraphQL API with OAuth account sync, personalized affinity scoring, discovery filters, and adult content controls.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
