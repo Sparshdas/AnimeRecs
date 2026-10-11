@@ -4,6 +4,8 @@ A personal anime, manga, and manhwa recommendation app, built as a native Androi
 
 AnimeRecs connects to your [AniList](https://anilist.co) account and suggests titles based on a custom similarity score — not just "people who watched X also watched Y," but a breakdown of genre overlap, tag overlap, format match, and AniList's own community recommendations, with an extra boost for genres you've personally rated highly.
 
+Built using [Google AI Studio](https://aistudio.google.com) for code generation, with manual edits, debugging, and iteration on top.
+
 This is a personal, single-user project — not published to the Play Store, not intended for general distribution.
 
 ## Features
@@ -22,6 +24,7 @@ This is a personal, single-user project — not published to the Play Store, not
 - AniList GraphQL API (OAuth 2.0 Implicit Grant)
 - Retrofit + Moshi
 - Coil for image loading
+- Built with Google AI Studio
 
 ## Status
 
@@ -29,4 +32,4 @@ Actively developed as a personal project. Built and tested locally via Android S
 
 ## Disclaimer
 
-Built for personal use only. Not affiliated with AniList or the original AniBrain.
+Built for personal use only. Not affiliated with AniList, AniBrain, or Google.
