@@ -5,6 +5,7 @@ import com.example.data.model.GraphQLRequest
 import com.example.data.model.MediaContainer
 import com.example.data.model.MediaListCollectionContainer
 import com.example.data.model.PageContainer
+import com.example.data.model.SaveMediaListEntryContainer
 import com.example.data.model.ViewerContainer
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -42,6 +43,12 @@ interface AniListApiService {
     suspend fun queryMediaListCollection(
         @Body request: GraphQLRequest
     ): AniListResponse<MediaListCollectionContainer>
+
+    @Headers("Content-Type: application/json", "Accept: application/json")
+    @POST("/")
+    suspend fun updateProgress(
+        @Body request: GraphQLRequest
+    ): AniListResponse<SaveMediaListEntryContainer>
 }
 
 object AniListNetwork {

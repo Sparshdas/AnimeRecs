@@ -3,6 +3,7 @@ package com.example.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,11 +28,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.LinkOff
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material.icons.filled.Star
@@ -50,11 +53,17 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRowDefaults.SecondaryIndicator
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -122,6 +131,24 @@ fun MyListScreen(viewModel: AnimeRecsViewModel) {
             .collect { (index, offset) -> viewModel.saveMyListScrollPosition(index, offset) }
     }
 
+    val completedPromptEntry by viewModel.completedPromptEntry.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(completedPromptEntry) {
+        val promptEntry = completedPromptEntry ?: return@LaunchedEffect
+        val title = promptEntry.media?.displayTitle ?: "Title"
+        val result = snackbarHostState.showSnackbar(
+            message = "Marked as Completed? ($title)",
+            actionLabel = "Mark Complete",
+            withDismissAction = true,
+            duration = SnackbarDuration.Short
+        )
+        if (result == SnackbarResult.ActionPerformed) {
+            viewModel.markEntryCompleted(promptEntry)
+        }
+        viewModel.clearCompletedPrompt()
+    }
+
     var searchQuery by remember { mutableStateOf("") }
     var sortDropdownExpanded by remember { mutableStateOf(false) }
 
@@ -175,6 +202,7 @@ fun MyListScreen(viewModel: AnimeRecsViewModel) {
             }
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     LazyVerticalGrid(
         state = gridState,
         columns = GridCells.Adaptive(minSize = 145.dp),
@@ -517,6 +545,9 @@ fun MyListScreen(viewModel: AnimeRecsViewModel) {
                     items(sortedAndFilteredEntries, key = { it.id }) { entry ->
                         UserMediaGridCard(
                             entry = entry,
+                            onIncrementProgress = { delta, total ->
+                                viewModel.incrementProgress(entry, delta, total)
+                            },
                             onClick = {
                                 val mediaId = entry.media?.id ?: entry.mediaId
                                 if (mediaId != null) {
@@ -533,6 +564,9 @@ fun MyListScreen(viewModel: AnimeRecsViewModel) {
                     ) { entry ->
                         UserMediaListCard(
                             entry = entry,
+                            onIncrementProgress = { delta, total ->
+                                viewModel.incrementProgress(entry, delta, total)
+                            },
                             onClick = {
                                 val mediaId = entry.media?.id ?: entry.mediaId
                                 if (mediaId != null) {
@@ -542,6 +576,29 @@ fun MyListScreen(viewModel: AnimeRecsViewModel) {
                         )
                     }
                 }
+            }
+        }
+    }
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(16.dp)
+        ) { data ->
+            Snackbar(
+                action = {
+                    data.visuals.actionLabel?.let { label ->
+                        TextButton(onClick = { data.performAction() }) {
+                            Text(label, color = AnimeCyan, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                },
+                containerColor = DarkSurfaceElevated,
+                contentColor = TextPrimary,
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Text(data.visuals.message, fontSize = 13.sp)
             }
         }
     }
@@ -777,6 +834,7 @@ private fun ConnectedUserHeader(
 @Composable
 private fun UserMediaGridCard(
     entry: MediaListEntry,
+    onIncrementProgress: (delta: Int, total: Int?) -> Unit,
     onClick: () -> Unit
 ) {
     val media = entry.media
@@ -788,6 +846,7 @@ private fun UserMediaGridCard(
         "PLANNING" -> AnimeViolet
         "PAUSED" -> Color(0xFFFFB74D)
         "DROPPED" -> Color(0xFFFF5252)
+        "REPEATING" -> AnimePink
         else -> TextSecondary
     }
 
@@ -797,16 +856,18 @@ private fun UserMediaGridCard(
         "PLANNING" -> "Planning"
         "PAUSED" -> "Paused"
         "DROPPED" -> "Dropped"
+        "REPEATING" -> if (media?.type == "MANGA") "Rereading" else "Rewatching"
         else -> entry.status ?: ""
     }
 
     // Progress text calculation
+    val currentProgress = entry.progress ?: 0
     val total = if (media?.type == "ANIME") media.episodes else media?.chapters
     val unit = if (media?.type == "ANIME") "Ep" else "Ch"
     val progressText = if (total != null && total > 0) {
-        "${entry.progress ?: 0}/$total"
+        "$currentProgress / $total"
     } else {
-        "${entry.progress ?: 0}"
+        "$currentProgress"
     }
 
     val score = entry.score ?: 0.0
@@ -900,23 +961,19 @@ private fun UserMediaGridCard(
                 }
             }
 
-            // Bottom-Right Progress Pill Overlay
-            Box(
+            // Bottom-Right Progress Stepper Overlay
+            ProgressStepperControl(
+                progressText = "$unit $progressText",
+                canDecrement = currentProgress > 0,
+                canIncrement = total == null || total <= 0 || currentProgress < total,
+                onDecrement = { onIncrementProgress(-1, total) },
+                onIncrement = { onIncrementProgress(1, total) },
+                entryId = entry.id,
+                isOverlay = true,
                 modifier = Modifier
                     .align(Alignment.BottomEnd)
                     .padding(6.dp)
-                    .clip(RoundedCornerShape(6.dp))
-                    .background(Color.Black.copy(alpha = 0.8f))
-                    .border(0.5.dp, DarkBorderSubtle, RoundedCornerShape(6.dp))
-                    .padding(horizontal = 6.dp, vertical = 2.dp)
-            ) {
-                Text(
-                    text = "$unit $progressText",
-                    color = TextPrimary,
-                    fontSize = 10.sp,
-                    fontWeight = FontWeight.Bold
-                )
-            }
+            )
         }
 
         Spacer(modifier = Modifier.height(6.dp))
@@ -965,6 +1022,7 @@ private fun UserMediaGridCard(
 @Composable
 private fun UserMediaListCard(
     entry: MediaListEntry,
+    onIncrementProgress: (delta: Int, total: Int?) -> Unit,
     onClick: () -> Unit
 ) {
     val media = entry.media
@@ -974,6 +1032,7 @@ private fun UserMediaListCard(
         "PLANNING" -> AnimeViolet
         "PAUSED" -> Color(0xFFFFB74D)
         "DROPPED" -> Color(0xFFFF5252)
+        "REPEATING" -> AnimePink
         else -> TextSecondary
     }
 
@@ -983,15 +1042,17 @@ private fun UserMediaListCard(
         "PLANNING" -> "Planning"
         "PAUSED" -> "Paused"
         "DROPPED" -> "Dropped"
+        "REPEATING" -> if (media?.type == "MANGA") "Rereading" else "Rewatching"
         else -> entry.status ?: ""
     }
 
+    val currentProgress = entry.progress ?: 0
     val total = if (media?.type == "ANIME") media.episodes else media?.chapters
     val unit = if (media?.type == "ANIME") "Ep" else "Ch"
     val progressText = if (total != null && total > 0) {
-        "$unit ${entry.progress ?: 0}/$total"
+        "$unit $currentProgress / $total"
     } else {
-        "$unit ${entry.progress ?: 0}"
+        "$unit $currentProgress"
     }
 
     val score = entry.score ?: 0.0
@@ -1079,11 +1140,14 @@ private fun UserMediaListCard(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Text(
-                        text = progressText,
-                        color = TextSecondary,
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium
+                    ProgressStepperControl(
+                        progressText = progressText,
+                        canDecrement = currentProgress > 0,
+                        canIncrement = total == null || total <= 0 || currentProgress < total,
+                        onDecrement = { onIncrementProgress(-1, total) },
+                        onIncrement = { onIncrementProgress(1, total) },
+                        entryId = entry.id,
+                        isOverlay = false
                     )
 
                     if (score > 0.0) {
@@ -1105,6 +1169,74 @@ private fun UserMediaListCard(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ProgressStepperControl(
+    progressText: String,
+    canDecrement: Boolean,
+    canIncrement: Boolean,
+    onDecrement: () -> Unit,
+    onIncrement: () -> Unit,
+    entryId: Int,
+    isOverlay: Boolean,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(2.dp),
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (isOverlay) Color.Black.copy(alpha = 0.85f) else DarkSurfaceElevated)
+            .border(0.5.dp, DarkBorderSubtle, RoundedCornerShape(6.dp))
+            // Consume clicks inside the stepper container so tapping disabled buttons or gaps never navigates to Detail
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {}
+            )
+            .padding(horizontal = 2.dp, vertical = 1.dp)
+    ) {
+        IconButton(
+            onClick = onDecrement,
+            enabled = canDecrement,
+            modifier = Modifier
+                .size(22.dp)
+                .testTag("progress_minus_$entryId")
+        ) {
+            Icon(
+                imageVector = Icons.Default.Remove,
+                contentDescription = "Decrease progress",
+                tint = if (canDecrement) AnimeCyan else TextMuted.copy(alpha = 0.35f),
+                modifier = Modifier.size(13.dp)
+            )
+        }
+
+        Text(
+            text = progressText,
+            color = if (isOverlay) TextPrimary else TextSecondary,
+            fontSize = if (isOverlay) 10.sp else 12.sp,
+            fontWeight = if (isOverlay) FontWeight.Bold else FontWeight.Medium,
+            modifier = Modifier
+                .padding(horizontal = 3.dp)
+                .testTag("progress_text_$entryId")
+        )
+
+        IconButton(
+            onClick = onIncrement,
+            enabled = canIncrement,
+            modifier = Modifier
+                .size(22.dp)
+                .testTag("progress_plus_$entryId")
+        ) {
+            Icon(
+                imageVector = Icons.Default.Add,
+                contentDescription = "Increase progress",
+                tint = if (canIncrement) AnimeCyan else TextMuted.copy(alpha = 0.35f),
+                modifier = Modifier.size(13.dp)
+            )
         }
     }
 }

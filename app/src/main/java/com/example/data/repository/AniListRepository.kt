@@ -5,6 +5,7 @@ import com.example.data.api.AniListNetwork
 import com.example.data.model.DiscoveryFilter
 import com.example.data.model.GraphQLRequest
 import com.example.data.model.MediaItem
+import com.example.data.model.MediaListEntry
 import com.example.data.model.MediaTypeSelection
 import com.example.data.model.ScoredRecommendation
 import com.example.domain.RecommendationEngine
@@ -272,6 +273,81 @@ class AniListRepository(
             Result.failure(e)
         }
     }
+
+    suspend fun updateEntryProgress(entryId: Int, newProgress: Int): Result<Int> = withContext(Dispatchers.IO) {
+        try {
+            val mutation = """
+                mutation (${'$'}id: Int, ${'$'}progress: Int) {
+                    SaveMediaListEntry(id: ${'$'}id, progress: ${'$'}progress) {
+                        id
+                        progress
+                    }
+                }
+            """.trimIndent()
+            val variables = mapOf("id" to entryId, "progress" to newProgress)
+            val response = api.updateProgress(GraphQLRequest(mutation, variables))
+            val errorMsg = response.errors?.firstOrNull()?.message
+            if (!errorMsg.isNullOrBlank()) {
+                return@withContext Result.failure(IllegalStateException(errorMsg))
+            }
+            val returnedProgress = response.data?.saveMediaListEntry?.progress
+                ?: return@withContext Result.failure(IllegalStateException("Failed to update progress"))
+            Result.success(returnedProgress)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun updateEntryStatus(entryId: Int, status: String): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val mutation = """
+                mutation (${'$'}id: Int, ${'$'}status: MediaListStatus) {
+                    SaveMediaListEntry(id: ${'$'}id, status: ${'$'}status) {
+                        id
+                        progress
+                        status
+                    }
+                }
+            """.trimIndent()
+            val variables = mapOf("id" to entryId, "status" to status)
+            val response = api.updateProgress(GraphQLRequest(mutation, variables))
+            val errorMsg = response.errors?.firstOrNull()?.message
+            if (!errorMsg.isNullOrBlank()) {
+                return@withContext Result.failure(IllegalStateException(errorMsg))
+            }
+            val returnedStatus = response.data?.saveMediaListEntry?.status ?: status
+            Result.success(returnedStatus)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
+    suspend fun addOrUpdateListEntry(mediaId: Int, status: String): Result<MediaListEntry> =
+        withContext(Dispatchers.IO) {
+            try {
+                val mutation = """
+                    mutation (${'$'}mediaId: Int, ${'$'}status: MediaListStatus) {
+                        SaveMediaListEntry(mediaId: ${'$'}mediaId, status: ${'$'}status) {
+                            id
+                            mediaId
+                            status
+                            progress
+                        }
+                    }
+                """.trimIndent()
+                val variables = mapOf("mediaId" to mediaId, "status" to status)
+                val response = api.updateProgress(GraphQLRequest(mutation, variables))
+                val errorMsg = response.errors?.firstOrNull()?.message
+                if (!errorMsg.isNullOrBlank()) {
+                    return@withContext Result.failure(IllegalStateException(errorMsg))
+                }
+                val entry = response.data?.saveMediaListEntry
+                    ?: return@withContext Result.failure(IllegalStateException("Failed to save entry"))
+                Result.success(entry)
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+        }
 
     suspend fun getPersonalizedRecommendations(
         favoriteGenres: List<String>,

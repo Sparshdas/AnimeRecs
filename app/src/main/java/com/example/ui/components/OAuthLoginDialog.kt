@@ -79,6 +79,7 @@ fun OAuthLoginDialog(
     var hasIntercepted by remember { mutableStateOf(false) }
     var hasRenderError by remember { mutableStateOf(false) }
     var retryKey by remember { mutableIntStateOf(0) }
+    var autoRetryCount by remember { mutableIntStateOf(0) }
     var webViewInstance by remember { mutableStateOf<WebView?>(null) }
 
     BackHandler(onBack = onDismiss)
@@ -89,6 +90,7 @@ fun OAuthLoginDialog(
                 webViewInstance?.apply {
                     stopLoading()
                     loadUrl("about:blank")
+                    clearHistory()
                     removeAllViews()
                     destroy()
                 }
@@ -186,7 +188,7 @@ fun OAuthLoginDialog(
                         .weight(1f)
                         .clip(RoundedCornerShape(12.dp))
                         .border(1.dp, DarkBorder, RoundedCornerShape(12.dp))
-                        .background(Color.White)
+                        .background(DarkSurfaceCard)
                 ) {
                     when {
                         hasIntercepted -> {
@@ -277,9 +279,14 @@ fun OAuthLoginDialog(
                                             webViewInstance = this
                                             // Disable hardware acceleration on webview to prevent GPU driver/render-process drops in container
                                             setLayerType(View.LAYER_TYPE_SOFTWARE, null)
+                                            setBackgroundColor(android.graphics.Color.parseColor("#151926"))
 
                                             settings.javaScriptEnabled = true
                                             settings.domStorageEnabled = true
+                                            settings.cacheMode = android.webkit.WebSettings.LOAD_NO_CACHE
+                                            val cookieManager = android.webkit.CookieManager.getInstance()
+                                            cookieManager.setAcceptCookie(true)
+                                            cookieManager.setAcceptThirdPartyCookies(this, false)
                                             settings.databaseEnabled = false
                                             settings.setSupportZoom(false)
                                             settings.builtInZoomControls = false
@@ -287,6 +294,13 @@ fun OAuthLoginDialog(
                                             settings.mediaPlaybackRequiresUserGesture = true
                                             settings.userAgentString =
                                                 "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
+
+                                            clearCache(true)
+                                            clearHistory()
+                                            clearFormData()
+                                            runCatching {
+                                                android.webkit.WebStorage.getInstance().deleteAllData()
+                                            }
 
                                             webViewClient = object : WebViewClient() {
                                                 override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
@@ -362,8 +376,15 @@ fun OAuthLoginDialog(
                                                     if (webViewInstance === view) {
                                                         webViewInstance = null
                                                     }
-                                                    isWebViewLoading = false
-                                                    hasRenderError = true
+                                                    if (autoRetryCount < 1) {
+                                                        autoRetryCount++
+                                                        isWebViewLoading = true
+                                                        hasRenderError = false
+                                                        retryKey++
+                                                    } else {
+                                                        isWebViewLoading = false
+                                                        hasRenderError = true
+                                                    }
                                                     return true
                                                 }
 
@@ -379,7 +400,10 @@ fun OAuthLoginDialog(
                                                 }
                                             }
 
-                                            loadUrl(authUrl)
+                                            cookieManager.removeAllCookies {
+                                                cookieManager.flush()
+                                                loadUrl(authUrl)
+                                            }
                                         }
                                     },
                                     modifier = Modifier.fillMaxSize()

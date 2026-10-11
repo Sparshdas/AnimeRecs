@@ -28,6 +28,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Movie
@@ -35,7 +36,12 @@ import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -43,6 +49,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -71,6 +78,7 @@ import com.example.data.model.ScoredRecommendation
 import com.example.ui.AnimeRecsViewModel
 import com.example.ui.ScreenDestination
 import com.example.ui.components.AdultBadge
+import com.example.ui.components.FullscreenImageViewer
 import com.example.ui.components.SimilarityBadge
 import com.example.ui.components.SimilarityBreakdownDialog
 import com.example.ui.theme.AnimeCyan
@@ -109,13 +117,74 @@ fun DetailScreen(
     val isLoading = if (media != null) false else isLoadingDetail
     val error = if (media != null) null else detailError
 
+    val detailUserEntry by viewModel.detailUserEntry.collectAsState()
+    val userAnimeList by viewModel.userAnimeList.collectAsState()
+    val userMangaList by viewModel.userMangaList.collectAsState()
+    val viewer by viewModel.viewer.collectAsState()
+    val activeViewerId by viewModel.activeViewerId.collectAsState()
+
     val savedIds by viewModel.preferences.savedMediaIds.collectAsState()
     val revealedAdultIds by viewModel.preferences.revealedAdultMediaIds.collectAsState()
 
-    var isSynopsisExpanded by remember(media?.id) { mutableStateOf(false) }
+    val currentUserEntry = remember(media?.id, media?.type, detailUserEntry, userAnimeList, userMangaList) {
+        val id = media?.id ?: return@remember null
+        if (detailUserEntry?.mediaId == id || detailUserEntry?.media?.id == id) {
+            detailUserEntry
+        } else {
+            val list = if (media.type.equals("MANGA", ignoreCase = true)) userMangaList else userAnimeList
+            list.find { it.mediaId == id || it.media?.id == id }
+        }
+    }
 
-    Scaffold(
-        topBar = {
+    var isSynopsisExpanded by remember(media?.id) { mutableStateOf(false) }
+    var statusDropdownExpanded by remember(media?.id) { mutableStateOf(false) }
+    var showConnectPromptDialog by remember { mutableStateOf(false) }
+    var fullscreenImageUrl by remember(media?.id) { mutableStateOf<String?>(null) }
+
+    if (showConnectPromptDialog) {
+        AlertDialog(
+            onDismissRequest = { showConnectPromptDialog = false },
+            containerColor = DarkSurfaceCard,
+            title = {
+                Text(
+                    text = "Connect to AniList",
+                    color = TextPrimary,
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Text(
+                    text = "Connect your AniList account first to add titles and sync your watch/read status.",
+                    color = TextSecondary,
+                    fontSize = 14.sp
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showConnectPromptDialog = false
+                        viewModel.openAniListAuth()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = AnimeViolet),
+                    modifier = Modifier.testTag("detail_connect_anilist_confirm_button")
+                ) {
+                    Text("Connect AniList", color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { showConnectPromptDialog = false }
+                ) {
+                    Text("Cancel", color = TextSecondary)
+                }
+            }
+        )
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
+        Scaffold(
+            topBar = {
             TopAppBar(
                 title = {
                     Text(
@@ -141,6 +210,83 @@ fun DetailScreen(
                 },
                 actions = {
                     if (media != null) {
+                        val isManga = media.type.equals("MANGA", ignoreCase = true)
+                        val currentStatusEnum = currentUserEntry?.status?.uppercase()
+                        val friendlyStatus = formatStatusLabel(currentStatusEnum, isManga)
+                        val isConnected = viewer != null || activeViewerId != null
+
+                        Box {
+                            Surface(
+                                onClick = {
+                                    if (!isConnected) {
+                                        showConnectPromptDialog = true
+                                    } else {
+                                        statusDropdownExpanded = true
+                                    }
+                                },
+                                color = if (friendlyStatus != null) AnimeViolet else AnimeViolet.copy(alpha = 0.18f),
+                                shape = RoundedCornerShape(10.dp),
+                                border = androidx.compose.foundation.BorderStroke(
+                                    1.dp,
+                                    if (friendlyStatus != null) AnimeViolet else AnimeViolet.copy(alpha = 0.65f)
+                                ),
+                                modifier = Modifier.testTag("detail_status_button")
+                            ) {
+                                Text(
+                                    text = if (friendlyStatus != null) "$friendlyStatus ▾" else "+ Add to List",
+                                    color = if (friendlyStatus != null) Color.White else AnimeVioletLight,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp)
+                                )
+                            }
+
+                            DropdownMenu(
+                                expanded = statusDropdownExpanded,
+                                onDismissRequest = { statusDropdownExpanded = false },
+                                modifier = Modifier
+                                    .background(DarkSurfaceCard)
+                                    .border(1.dp, DarkBorder, RoundedCornerShape(10.dp))
+                            ) {
+                                getStatusOptions(isManga).forEach { (enumValue, label) ->
+                                    val isSelected = currentStatusEnum == enumValue
+                                    DropdownMenuItem(
+                                        text = {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                            ) {
+                                                if (isSelected) {
+                                                    Icon(
+                                                        imageVector = Icons.Default.Check,
+                                                        contentDescription = null,
+                                                        tint = AnimeCyan,
+                                                        modifier = Modifier.size(16.dp)
+                                                    )
+                                                } else {
+                                                    Spacer(modifier = Modifier.size(16.dp))
+                                                }
+                                                Text(
+                                                    text = label,
+                                                    color = if (isSelected) AnimeCyan else TextPrimary,
+                                                    fontSize = 13.sp,
+                                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                                                )
+                                            }
+                                        },
+                                        onClick = {
+                                            statusDropdownExpanded = false
+                                            viewModel.setMediaListStatus(media.id, enumValue)
+                                        },
+                                        modifier = Modifier.testTag("detail_status_option_${enumValue.lowercase()}")
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(4.dp))
+
                         val isSaved = savedIds.contains(media.id)
                         IconButton(
                             onClick = { viewModel.toggleSaveCurrentMedia(media.id) },
@@ -160,7 +306,7 @@ fun DetailScreen(
             )
         },
         containerColor = MaterialTheme.colorScheme.background,
-        modifier = modifier.fillMaxSize()
+        modifier = Modifier.fillMaxSize()
     ) { paddingValues ->
         Box(
             modifier = Modifier
@@ -233,7 +379,8 @@ fun DetailScreen(
                         DetailHeroSection(
                             media = currentMedia,
                             shouldBlur = shouldBlur,
-                            onRevealAdult = { viewModel.revealAdultContent(currentMedia.id) }
+                            onRevealAdult = { viewModel.revealAdultContent(currentMedia.id) },
+                            onCoverClick = { url -> fullscreenImageUrl = url }
                         )
                     }
 
@@ -392,6 +539,14 @@ fun DetailScreen(
                 }
             }
         }
+        }
+
+        fullscreenImageUrl?.let { url ->
+            FullscreenImageViewer(
+                imageUrl = url,
+                onDismiss = { fullscreenImageUrl = null }
+            )
+        }
     }
 }
 
@@ -399,7 +554,8 @@ fun DetailScreen(
 private fun DetailHeroSection(
     media: MediaItem,
     shouldBlur: Boolean,
-    onRevealAdult: () -> Unit
+    onRevealAdult: () -> Unit,
+    onCoverClick: (String) -> Unit
 ) {
     Box(
         modifier = Modifier
@@ -440,6 +596,9 @@ private fun DetailHeroSection(
             verticalAlignment = Alignment.Bottom
         ) {
             // Poster Card
+            val fullResCoverUrl = media.coverImage?.extraLarge
+                ?: media.coverImage?.large
+                ?: media.coverImage?.bestUrl
             Box(
                 modifier = Modifier
                     .width(115.dp)
@@ -447,6 +606,10 @@ private fun DetailHeroSection(
                     .clip(RoundedCornerShape(12.dp))
                     .border(1.dp, AnimeViolet.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
                     .background(DarkSurfaceElevated)
+                    .clickable(enabled = !shouldBlur && !fullResCoverUrl.isNullOrBlank()) {
+                        fullResCoverUrl?.let(onCoverClick)
+                    }
+                    .testTag("detail_cover_thumbnail")
             ) {
                 AsyncImage(
                     model = media.coverImage?.bestUrl,
@@ -794,3 +957,26 @@ private fun RecommendationRowItem(
         )
     }
 }
+
+private fun getStatusOptions(isManga: Boolean): List<Pair<String, String>> = listOf(
+    "CURRENT" to "Watching",
+    "PLANNING" to "Planning",
+    "COMPLETED" to "Completed",
+    "PAUSED" to "On Hold",
+    "DROPPED" to "Dropped",
+    "REPEATING" to if (isManga) "Rereading" else "Rewatching"
+)
+
+private fun formatStatusLabel(status: String?, isManga: Boolean): String? {
+    if (status.isNullOrBlank()) return null
+    return when (status.uppercase()) {
+        "CURRENT" -> "Watching"
+        "PLANNING" -> "Planning"
+        "COMPLETED" -> "Completed"
+        "PAUSED" -> "On Hold"
+        "DROPPED" -> "Dropped"
+        "REPEATING" -> if (isManga) "Rereading" else "Rewatching"
+        else -> status.lowercase().replaceFirstChar { it.uppercase() }
+    }
+}
+

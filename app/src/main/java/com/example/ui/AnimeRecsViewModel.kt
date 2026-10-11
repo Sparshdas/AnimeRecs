@@ -16,8 +16,11 @@ import com.example.data.repository.AniListRepository
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 sealed class ScreenDestination {
@@ -126,8 +129,34 @@ class AnimeRecsViewModel(application: Application) : AndroidViewModel(applicatio
     private val _userMediaListCollection = MutableStateFlow<MediaListCollection?>(null)
     val userMediaListCollection: StateFlow<MediaListCollection?> = _userMediaListCollection.asStateFlow()
 
+    private val _userAnimeList = MutableStateFlow<List<MediaListEntry>>(emptyList())
+    val userAnimeList: StateFlow<List<MediaListEntry>> = _userAnimeList.asStateFlow()
+
+    private val _userMangaList = MutableStateFlow<List<MediaListEntry>>(emptyList())
+    val userMangaList: StateFlow<List<MediaListEntry>> = _userMangaList.asStateFlow()
+
     private val _userListEntries = MutableStateFlow<List<MediaListEntry>>(emptyList())
     val userListEntries: StateFlow<List<MediaListEntry>> = _userListEntries.asStateFlow()
+
+    val detailUserEntry: StateFlow<MediaListEntry?> = combine(
+        _detailMedia,
+        _currentScreen,
+        _userAnimeList,
+        _userMangaList,
+        _userListEntries
+    ) { media, screen, animeList, mangaList, currentEntries ->
+        val targetMedia = media ?: (screen as? ScreenDestination.Detail)?.let { detailCache[it.mediaId]?.first }
+        val targetId = targetMedia?.id ?: (screen as? ScreenDestination.Detail)?.mediaId ?: return@combine null
+        val primaryList = when (targetMedia?.type?.uppercase()) {
+            "MANGA" -> mangaList
+            "ANIME" -> animeList
+            else -> currentEntries
+        }
+        primaryList.find { it.mediaId == targetId || it.media?.id == targetId }
+            ?: currentEntries.find { it.mediaId == targetId || it.media?.id == targetId }
+            ?: animeList.find { it.mediaId == targetId || it.media?.id == targetId }
+            ?: mangaList.find { it.mediaId == targetId || it.media?.id == targetId }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     private val _selectedUserListStatus = MutableStateFlow("ALL")
     val selectedUserListStatus: StateFlow<String> = _selectedUserListStatus.asStateFlow()
@@ -270,6 +299,11 @@ class AnimeRecsViewModel(application: Application) : AndroidViewModel(applicatio
         if (_selectedMediaType.value != type) {
             _selectedMediaType.value = type
             _discoveryFilter.value = _discoveryFilter.value.copy(mediaType = type)
+            _userListEntries.value = if (type == MediaTypeSelection.ANIME) {
+                _userAnimeList.value
+            } else {
+                _userMangaList.value
+            }
             // Reload search or trending for the new media type
             if (_searchQuery.value.isNotBlank()) {
                 triggerSearch(_searchQuery.value)
@@ -423,7 +457,17 @@ class AnimeRecsViewModel(application: Application) : AndroidViewModel(applicatio
     // --- AniList OAuth & List Management Methods ---
 
     fun openAniListAuth() {
+        clearAniListWebViewSession()
         _showOAuthDialog.value = true
+    }
+
+    private fun clearAniListWebViewSession() {
+        runCatching {
+            val cookieManager = android.webkit.CookieManager.getInstance()
+            cookieManager.removeAllCookies(null)
+            cookieManager.flush()
+            android.webkit.WebStorage.getInstance().deleteAllData()
+        }
     }
 
     fun dismissAniListAuth() {
@@ -489,6 +533,8 @@ class AnimeRecsViewModel(application: Application) : AndroidViewModel(applicatio
 
         // Reset list states while fetching
         _userMediaListCollection.value = null
+        _userAnimeList.value = emptyList()
+        _userMangaList.value = emptyList()
         _userListEntries.value = emptyList()
         _userAffinityGenres.value = emptySet()
         _userAffinityTags.value = emptySet()
@@ -516,6 +562,8 @@ class AnimeRecsViewModel(application: Application) : AndroidViewModel(applicatio
                 AniListNetwork.currentToken = null
                 _viewer.value = null
                 _userMediaListCollection.value = null
+                _userAnimeList.value = emptyList()
+                _userMangaList.value = emptyList()
                 _userListEntries.value = emptyList()
                 _userAffinityGenres.value = emptySet()
                 _userAffinityTags.value = emptySet()
@@ -540,6 +588,8 @@ class AnimeRecsViewModel(application: Application) : AndroidViewModel(applicatio
         AniListNetwork.currentToken = null
         _viewer.value = null
         _userMediaListCollection.value = null
+        _userAnimeList.value = emptyList()
+        _userMangaList.value = emptyList()
         _userListEntries.value = emptyList()
         _userAffinityGenres.value = emptySet()
         _userAffinityTags.value = emptySet()
@@ -587,15 +637,21 @@ class AnimeRecsViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun loadUserMediaList() {
         val currentViewer = _viewer.value ?: return
+        val selectedType = _selectedMediaType.value
         viewModelScope.launch {
             _isLoadingUserList.value = true
             _userListError.value = null
 
-            val result = repository.getUserMediaList(currentViewer.id, _selectedMediaType.value)
+            val result = repository.getUserMediaList(currentViewer.id, selectedType)
             result.onSuccess { collection ->
                 _userMediaListCollection.value = collection
                 val allEntries = collection.lists.flatMap { it.entries }
                     .distinctBy { it.mediaId ?: it.id }
+                if (selectedType == MediaTypeSelection.ANIME) {
+                    _userAnimeList.value = allEntries
+                } else {
+                    _userMangaList.value = allEntries
+                }
                 _userListEntries.value = allEntries
                 _isLoadingUserList.value = false
 
@@ -605,6 +661,21 @@ class AnimeRecsViewModel(application: Application) : AndroidViewModel(applicatio
             }.onFailure { error ->
                 _userListError.value = error.message ?: "Failed to fetch media list"
                 _isLoadingUserList.value = false
+            }
+
+            // Also sync the complementary list (Anime vs Manga) in the background so DetailScreen knows status for both types
+            val otherType = if (selectedType == MediaTypeSelection.ANIME) MediaTypeSelection.MANGA else MediaTypeSelection.ANIME
+            val isOtherEmpty = if (otherType == MediaTypeSelection.ANIME) _userAnimeList.value.isEmpty() else _userMangaList.value.isEmpty()
+            if (isOtherEmpty) {
+                repository.getUserMediaList(currentViewer.id, otherType).onSuccess { otherCollection ->
+                    val otherEntries = otherCollection.lists.flatMap { it.entries }
+                        .distinctBy { it.mediaId ?: it.id }
+                    if (otherType == MediaTypeSelection.ANIME) {
+                        _userAnimeList.value = otherEntries
+                    } else {
+                        _userMangaList.value = otherEntries
+                    }
+                }
             }
         }
     }
@@ -678,6 +749,156 @@ class AnimeRecsViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun toggleUserListViewMode() {
         _isUserListViewGrid.value = !_isUserListViewGrid.value
+    }
+
+    private val _completedPromptEntry = MutableStateFlow<MediaListEntry?>(null)
+    val completedPromptEntry: StateFlow<MediaListEntry?> = _completedPromptEntry.asStateFlow()
+
+    fun clearCompletedPrompt() {
+        _completedPromptEntry.value = null
+    }
+
+    fun incrementProgress(entry: MediaListEntry, delta: Int, maxTotal: Int?) {
+        viewModelScope.launch {
+            val currentProgress = entry.progress ?: 0
+            val newProgress = (currentProgress + delta).coerceAtLeast(0).let {
+                if (maxTotal != null && maxTotal > 0) it.coerceAtMost(maxTotal) else it
+            }
+            if (newProgress == currentProgress) return@launch
+
+            // Optimistically update local state first so the UI feels instant
+            updateLocalEntryProgress(entry.id, newProgress)
+
+            if (delta > 0 && maxTotal != null && maxTotal > 0 && newProgress == maxTotal && !entry.status.equals("COMPLETED", ignoreCase = true)) {
+                _completedPromptEntry.value = entry.copy(progress = newProgress)
+            }
+
+            val result = repository.updateEntryProgress(entry.id, newProgress)
+            result.onSuccess { returnedProgress ->
+                updateLocalEntryProgress(entry.id, returnedProgress)
+            }.onFailure {
+                // Revert the optimistic update on failure
+                updateLocalEntryProgress(entry.id, currentProgress)
+            }
+        }
+    }
+
+    private fun updateLocalEntryProgress(entryId: Int, progress: Int) {
+        val updateList: (List<MediaListEntry>) -> List<MediaListEntry> = { list ->
+            list.map { item ->
+                if (item.id == entryId) item.copy(progress = progress) else item
+            }
+        }
+        _userAnimeList.value = updateList(_userAnimeList.value)
+        _userMangaList.value = updateList(_userMangaList.value)
+        _userListEntries.value = updateList(_userListEntries.value)
+    }
+
+    fun markEntryCompleted(entry: MediaListEntry) {
+        val previousStatus = entry.status
+        viewModelScope.launch {
+            updateLocalEntryStatus(entry.id, "COMPLETED")
+            val result = repository.updateEntryStatus(entry.id, "COMPLETED")
+            result.onFailure {
+                updateLocalEntryStatus(entry.id, previousStatus)
+            }
+        }
+    }
+
+    private fun updateLocalEntryStatus(entryId: Int, status: String?) {
+        val updateList: (List<MediaListEntry>) -> List<MediaListEntry> = { list ->
+            list.map { item ->
+                if (item.id == entryId) item.copy(status = status) else item
+            }
+        }
+        _userAnimeList.value = updateList(_userAnimeList.value)
+        _userMangaList.value = updateList(_userMangaList.value)
+        _userListEntries.value = updateList(_userListEntries.value)
+    }
+
+    fun setMediaListStatus(mediaId: Int, status: String) {
+        val mediaItem = (_detailMedia.value?.takeIf { it.id == mediaId })
+            ?: detailCache[mediaId]?.first
+            ?: _userListEntries.value.firstOrNull { it.mediaId == mediaId || it.media?.id == mediaId }?.media
+            ?: _userAnimeList.value.firstOrNull { it.mediaId == mediaId || it.media?.id == mediaId }?.media
+            ?: _userMangaList.value.firstOrNull { it.mediaId == mediaId || it.media?.id == mediaId }?.media
+            ?: _searchResults.value.firstOrNull { it.id == mediaId }
+            ?: _trendingMedia.value.firstOrNull { it.id == mediaId }
+
+        val isManga = mediaItem?.type?.equals("MANGA", ignoreCase = true) == true ||
+            _userMangaList.value.any { it.mediaId == mediaId || it.media?.id == mediaId }
+
+        val previousAnimeList = _userAnimeList.value
+        val previousMangaList = _userMangaList.value
+        val previousEntries = _userListEntries.value
+
+        // Optimistically update local lists immediately
+        val optimisticEntry = MediaListEntry(
+            id = detailUserEntry.value?.takeIf { it.mediaId == mediaId || it.media?.id == mediaId }?.id ?: -mediaId,
+            mediaId = mediaId,
+            status = status,
+            progress = detailUserEntry.value?.takeIf { it.mediaId == mediaId || it.media?.id == mediaId }?.progress ?: 0,
+            updatedAt = System.currentTimeMillis() / 1000,
+            media = mediaItem
+        )
+        upsertEntryInLocalLists(mediaId, optimisticEntry, mediaItem, isManga)
+
+        viewModelScope.launch {
+            val result = repository.addOrUpdateListEntry(mediaId, status)
+            result.onSuccess { entry ->
+                upsertEntryInLocalLists(mediaId, entry, mediaItem, isManga)
+            }.onFailure {
+                _userAnimeList.value = previousAnimeList
+                _userMangaList.value = previousMangaList
+                _userListEntries.value = previousEntries
+            }
+        }
+    }
+
+    private fun upsertEntryInLocalLists(
+        mediaId: Int,
+        entry: MediaListEntry,
+        mediaItem: MediaItem?,
+        isManga: Boolean
+    ) {
+        val nowSeconds = System.currentTimeMillis() / 1000
+        val mergeList: (List<MediaListEntry>) -> List<MediaListEntry> = { list ->
+            val existingIndex = list.indexOfFirst {
+                it.mediaId == mediaId || it.media?.id == mediaId || (entry.id > 0 && it.id == entry.id)
+            }
+            if (existingIndex >= 0) {
+                val existing = list[existingIndex]
+                val updated = existing.copy(
+                    id = if (entry.id > 0) entry.id else existing.id,
+                    mediaId = entry.mediaId ?: existing.mediaId ?: mediaId,
+                    status = entry.status ?: existing.status,
+                    progress = entry.progress ?: existing.progress ?: 0,
+                    updatedAt = entry.updatedAt ?: nowSeconds,
+                    media = existing.media ?: entry.media ?: mediaItem
+                )
+                list.toMutableList().apply { set(existingIndex, updated) }
+            } else {
+                val newEntry = entry.copy(
+                    mediaId = entry.mediaId ?: mediaId,
+                    progress = entry.progress ?: 0,
+                    updatedAt = entry.updatedAt ?: nowSeconds,
+                    media = entry.media ?: mediaItem
+                )
+                listOf(newEntry) + list
+            }
+        }
+
+        if (isManga) {
+            _userMangaList.value = mergeList(_userMangaList.value)
+            if (_selectedMediaType.value != MediaTypeSelection.ANIME) {
+                _userListEntries.value = _userMangaList.value
+            }
+        } else {
+            _userAnimeList.value = mergeList(_userAnimeList.value)
+            if (_selectedMediaType.value == MediaTypeSelection.ANIME) {
+                _userListEntries.value = _userAnimeList.value
+            }
+        }
     }
 
     fun requestToggleAdultContent(targetState: Boolean) {

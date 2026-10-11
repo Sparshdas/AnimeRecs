@@ -278,3 +278,12 @@ data class MediaListEntry(
         }
 }
 
+typealias UserMediaListEntry = MediaListEntry
+
+data class SaveMediaListEntryContainer(
+    @Json(name = "SaveMediaListEntry") val saveMediaListEntry: MediaListEntry? = null
+)
+
+typealias SavedMediaListEntry = MediaListEntry
+
+
